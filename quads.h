@@ -1,24 +1,33 @@
 #ifndef QUADS_H
 #define QUADS_H
 
+typedef unsigned int shader_t;
+typedef unsigned int texture_t;
+
 typedef struct {
-    float x, y, w, h;
-    unsigned int shader;
-    unsigned int img;
+    float x, y, w, h, rotation;
+    shader_t shader;
+    texture_t img;
 } quad_t;
 
-// fs_path can be NULL for a simple sprite, img_path can be NULL for no texture
-quad_t Quad(float w_, float h_, const char* fs_path, const char* img_path);
+quad_t Quad(float w_, float h_, shader_t shader_, texture_t img_); // shader_ and/or img_ may be 0
+texture_t Texture(const char* path);
+shader_t Shader(const char* path);
 
-// mainloop takes time in seconds as argument, and returns 0 to stop the loop
-void set_mainloop(int (*mainloop)(double));
+void set_mainloop(int (*mainloop)(double)); // mainloop :: time -> should_continue_loop
+void set_key_callback(void (*key_callback__)(const char* key, int pressed)); // "a", "ArrowUp", "Escape", ...
+void set_mouse_move_callback(void (*mouse_move_callback__)(int x, int y)); // (x, y) is mouse position from top-left
+void set_mouse_button_callback(void (*mouse_button_callback__)(int left, int pressed));
+
 void draw(quad_t q);
 
-void uniform(quad_t q, const char* name, float value);
+void uniform (quad_t q, const char* name, float value);
 void uniform2(quad_t q, const char* name, float vx, float vy);
 void uniform3(quad_t q, const char* name, float vx, float vy, float vz);
 
-// to include : first #define QUADS_IMPLEMENTATION (only once !), then include
+// ______________________________________________________________________________
+
+// to link : first #define QUADS_IMPLEMENTATION (only once !), then include
 // to compile : emcc -o main.js main.c --preload-file res/
 
 /* Minimal fragment shader with texture :
@@ -31,7 +40,30 @@ void main()
 {
     gl_FragColor = texture2D(img, uv);
 }
+
 */
+
+// ______________________________________________________________________________
+
+/* Minimal index.html :
+
+<!DOCTYPE html>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smol window</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}canvas{display:block;width:100%;height:100%}</style>
+<canvas id="canvas"></canvas>
+<script>
+let c=canvas,r=_=>{c.width=innerWidth;c.height=innerHeight;if(Module?.canvas===c)Module.setCanvasSize?.(c.width,c.height)};
+addEventListener("resize",r);r();
+</script>
+<script src="main.js"></script>
+
+*/
+
+// ______________________________________________________________________________
+
+
 
 
 
@@ -81,6 +113,10 @@ void main()
 #include <emscripten/html5.h>
 
 int (*mainloop_)(double);
+void (*key_callback_)(const char* key, int pressed);
+void (*mouse_move_callback_)(int x, int y);
+void (*mouse_button_callback_)(int left, int pressed);
+
 double window_width, window_height;
 float aspectRatio;
 
@@ -94,6 +130,7 @@ void update_window_dimensions()
 
     glViewport(0, 0, (int)window_width, (int)window_height);
 }
+
 
 unsigned int compile_shader(unsigned int type, const char *source)
 {
@@ -145,6 +182,38 @@ EM_BOOL EM_MAINLOOP(double time, void* data)
     return mainloop_(time);
 }
 
+EM_BOOL EM_KEY_CALLBACK(int eventType, const EmscriptenKeyboardEvent *e, void *userData)
+{
+    if(eventType == EMSCRIPTEN_EVENT_KEYDOWN)
+    {
+        key_callback_(e->key, true);
+    }
+    else if(eventType == EMSCRIPTEN_EVENT_KEYUP)
+    {
+        key_callback_(e->key, false);
+    }
+    return EM_TRUE;
+}
+
+EM_BOOL EM_MOUSE_MOVE_CALLBACK(int eventType, const EmscriptenMouseEvent *e, void *userData)
+{
+    mouse_move_callback_(e->canvasX, e->canvasY);
+    return EM_TRUE;
+}
+
+EM_BOOL EM_MOUSE_BUTTON_CALLBACK(int eventType, const EmscriptenMouseEvent *e, void *userData)
+{
+    if(eventType == EMSCRIPTEN_EVENT_MOUSEDOWN && (e->button == 0 || e->button == 2))
+    {
+        mouse_button_callback_(e->button == 0, true);
+    }
+    else if(eventType == EMSCRIPTEN_EVENT_MOUSEUP && (e->button == 0 || e->button == 2))
+    {
+        mouse_button_callback_(e->button == 0, false);
+    }
+    return EM_TRUE;
+}
+
 void set_mainloop(int (*mainloop)(double))
 {
     EmscriptenWebGLContextAttributes attr;
@@ -180,6 +249,28 @@ void set_mainloop(int (*mainloop)(double))
 
     update_window_dimensions();
 }
+
+
+void set_key_callback(void (*key_callback__)(const char* key, int pressed))
+{
+    emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, EM_TRUE, EM_KEY_CALLBACK);
+    emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, EM_TRUE, EM_KEY_CALLBACK);
+    key_callback_ = key_callback__;
+}
+
+void set_mouse_move_callback(void (*mouse_move_callback__)(int x, int y))
+{
+    emscripten_set_mousemove_callback("#canvas", NULL, EM_TRUE, EM_MOUSE_MOVE_CALLBACK);
+    mouse_move_callback_ = mouse_move_callback__;
+}
+
+void set_mouse_button_callback(void (*mouse_button_callback__)(int left, int pressed))
+{
+    emscripten_set_mousedown_callback("#canvas", NULL, EM_TRUE, EM_MOUSE_BUTTON_CALLBACK);
+    emscripten_set_mouseup_callback("#canvas", NULL, EM_TRUE, EM_MOUSE_BUTTON_CALLBACK);
+    mouse_button_callback_ = mouse_button_callback__;
+}
+
 
 // written in one of my previous projects 2 years ago
 // I adapted it so it can also read grey-scale images (.pgm format)
@@ -229,9 +320,63 @@ unsigned char *read_ppm(int is_pgm, const char *filename_ppm, int *width, int *h
     return res;
 }
 
-unsigned int init_texture(const char* path)
+#define VERTEX_SHADER_SOURCE \
+        ("precision mediump float;\
+         attribute vec2 local;\
+         uniform vec2 pos;\
+         uniform vec2 size;\
+         uniform float rotation;\
+         varying vec2 uv;\
+         mat2 rot2D(float a){\
+             float s=sin(a), c=cos(a);\
+             return mat2(c, -s, s, c);\
+         }\
+         void main() {\
+            gl_Position = vec4((2.0 * local - 1.0) * rot2D(rotation) * size + pos, 0.0, 1.0);\
+            uv = 2.0 * local - vec2(1.0);\
+         }")
+
+shader_t default_shader()
 {
-    if(!path || !*path || !path[1]) return -1;
+    return create_program(
+        VERTEX_SHADER_SOURCE,
+        
+        "precision mediump float;\
+         varying vec2 uv;\
+         void main(){\
+            gl_FragColor=vec4(uv, 1.0, 1.0);\
+         }"
+    );
+}
+
+shader_t sprite_shader()
+{
+    return create_program(
+        VERTEX_SHADER_SOURCE,
+        
+        "precision mediump float;\
+         uniform sampler2D img;\
+         varying vec2 uv;\
+         void main(){\
+            gl_FragColor=texture2D(img, uv);\
+         }"
+    );
+}
+
+shader_t Shader(const char* path)
+{
+    if(!path) return sprite_shader();
+
+    char* fs_source = read_shader(path);
+    shader_t sh = create_program(VERTEX_SHADER_SOURCE, fs_source);
+    free(fs_source);
+
+    return sh;
+}
+
+texture_t Texture(const char* path)
+{
+    if(!path || !*path || !path[1]) return 0;
 
     int width, height;
     int g = 0; for(; path[g]; g++);
@@ -269,38 +414,16 @@ unsigned int init_texture(const char* path)
     return texture_id;
 }
 
-
-quad_t Quad(float w_, float h_, const char* fs_path, const char* img_path)
+quad_t Quad(float w_, float h_, shader_t shader_, texture_t img_)
 {
     quad_t res;
     res.x = 0;
     res.y = 0;
     res.w = w_;
     res.h = h_;
-    char* fs_source = fs_path ? read_shader(fs_path) :
-        "precision mediump float;\
-         uniform sampler2D img;\
-         varying vec2 uv;\
-         void main(){\
-            gl_FragColor=texture2D(img, uv);\
-         }";
-
-    res.shader = create_program(
-        "precision mediump float;\
-         attribute vec2 local;\
-         uniform vec2 pos;\
-         uniform vec2 size;\
-         varying vec2 uv;\
-         void main() {\
-            gl_Position = vec4(local * size + pos, 0.0, 1.0);\
-            uv = 2.0 * local - vec2(1.0);\
-         }",
-        fs_source
-    );
-    if(fs_path) free(fs_source);
-
-    if(img_path) res.img = init_texture(img_path);
-    else res.img = 0;
+    res.rotation = 0.0f;
+    res.shader = shader_ ? shader_ : (img_ ? sprite_shader() : default_shader());
+    res.img = img_;
 
     return res;
 }
@@ -328,6 +451,7 @@ void draw(quad_t q)
     glUseProgram(q.shader);
     glUniform2f(glGetUniformLocation(q.shader, "size"), q.w / aspectRatio, q.h);
     glUniform2f(glGetUniformLocation(q.shader, "pos"), q.x / window_width, q.y / window_height);
+    glUniform1f(glGetUniformLocation(q.shader, "rotation"), q.rotation);
     if(q.img != 0)
     {
         glBindTexture(GL_TEXTURE_2D, q.img);
