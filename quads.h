@@ -53,10 +53,7 @@ void main()
 <title>Smol window</title>
 <style>html,body{margin:0;height:100%;overflow:hidden}canvas{display:block;width:100%;height:100%}</style>
 <canvas id="canvas"></canvas>
-<script>
-let c=canvas,r=_=>{c.width=innerWidth;c.height=innerHeight;if(Module?.canvas===c)Module.setCanvasSize?.(c.width,c.height)};
-addEventListener("resize",r);r();
-</script>
+<script>var Module={canvas};let r=_=>{canvas.width=innerWidth;canvas.height=innerHeight};addEventListener("resize",r);r()</script>
 <script src="main.js"></script>
 
 */
@@ -225,6 +222,9 @@ void set_mainloop(int (*mainloop)(double))
 
     mainloop_ = mainloop;
     emscripten_request_animation_frame_loop(EM_MAINLOOP, NULL);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     float vertices[] = {
         0.0f, 0.0f,
